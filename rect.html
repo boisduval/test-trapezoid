@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>手动绘制多边形 - 边拖动与全吸附版</title>
+    <title>手动绘制多边形 - 拖拽绘图版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #f8fafc; overflow: hidden; }
@@ -35,13 +35,13 @@
     <div class="bg-white border-b border-slate-200 px-4 py-3 shadow-sm">
         <div class="max-w-6xl mx-auto flex items-center justify-between">
             <div>
-                <h1 class="text-lg md:text-xl font-black text-slate-800 tracking-tight">自定义形状绘制 (支持边拖拽)</h1>
-                <p id="status-text" class="text-xs text-blue-600 font-medium italic">点击画布开始绘制...</p>
+                <h1 class="text-lg md:text-xl font-black text-slate-800 tracking-tight">自定义形状绘制 (拖拽绘图)</h1>
+                <p id="status-text" class="text-xs text-blue-600 font-medium italic">点击放置起点，然后从点拖出连线...</p>
             </div>
             <div class="text-right">
                 <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">多边形面积</div>
                 <div class="text-xl font-mono font-black text-emerald-600">
-                    <span id="area-val">0</span> <small class="text-xs font-medium">px²</small>
+                    <span id="area-val">0</span> <small class="text-xs font-medium">u²</small>
                 </div>
             </div>
         </div>
@@ -98,16 +98,26 @@
         const confirmBtn = document.getElementById('confirm-length');
         const cancelBtn = document.getElementById('cancel-length');
 
-        let points = [];
+        // 数据状态
+        let points = []; 
         let isClosed = false;
-        let draggingIdx = -1;       // 正在拖拽的顶点索引
-        let draggingSideIdx = -1;   // 正在拖拽的边索引
-        let lastDragPos = null;     // 上一次拖拽的位置，用于计算偏移量
+        let draggingIdx = -1;       // 正在编辑已有顶点
+        let draggingSideIdx = -1;   // 正在移动整条边
+        let isDrawingNew = false;   // 正在从最后一点拉出新线
+        let tempEndPoint = null;    // 绘图时的临时吸附点
+        
+        let lastLogicPos = null;
         let selectedSideIdx = -1;
         let isSnapEnabled = true;
         let isModalOpen = false;
-        const hitRadius = 25;       // 增大判定范围，方便触控
-        const snapThreshold = 18;
+
+        let viewScale = 1;
+        let viewOffsetX = 0;
+        let viewOffsetY = 0;
+
+        const hitRadius = 30; // 移动端增大判定
+        const snapThreshold = 18; 
+        const padding = 60;
 
         function init() {
             window.addEventListener('resize', resizeCanvas);
@@ -119,20 +129,18 @@
 
             canvas.addEventListener('touchstart', e => { e.preventDefault(); handleStart(e.touches[0]); }, {passive: false});
             window.addEventListener('touchmove', e => { handleMove(e.touches[0]); }, {passive: false});
-            window.addEventListener('touchend', handleEnd);
+            window.addEventListener('touchend', e => { handleEnd(e.changedTouches ? e.changedTouches[0] : e); });
 
             btnClose.addEventListener('click', () => { if(points.length >= 3) { isClosed = true; draw(); updateUI(); } });
             btnUndo.addEventListener('click', () => { 
                 if(!isClosed) { points.pop(); } else { isClosed = false; }
                 draw(); updateUI(); 
             });
-            btnClear.addEventListener('click', () => { points = []; isClosed = false; draw(); updateUI(); });
+            btnClear.addEventListener('click', () => { points = []; isClosed = false; isDrawingNew = false; draw(); updateUI(); });
             
             btnSnap.addEventListener('click', () => {
                 isSnapEnabled = !isSnapEnabled;
-                btnSnap.className = isSnapEnabled ? 
-                    "btn-action bg-amber-100 text-amber-700 border border-amber-200" : 
-                    "btn-action bg-slate-100 text-slate-400 border border-slate-200";
+                btnSnap.className = isSnapEnabled ? "btn-action bg-amber-100 text-amber-700 border border-amber-200" : "btn-action bg-slate-100 text-slate-400 border border-slate-200";
                 snapIcon.className = isSnapEnabled ? "w-2 h-2 rounded-full bg-amber-500" : "w-2 h-2 rounded-full bg-slate-300";
                 btnSnap.innerHTML = `<span class="${snapIcon.className}"></span> 智能吸附: ${isSnapEnabled ? '开' : '关'}`;
             });
@@ -151,144 +159,107 @@
             draw();
         }
 
-        function getMousePos(e) {
-            const rect = canvas.getBoundingClientRect();
-            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        function updateViewport() {
+            if (points.length === 0) { viewScale = 1; viewOffsetX = 0; viewOffsetY = 0; return; }
+            const rect = container.getBoundingClientRect();
+            const canvasW = rect.width, canvasH = rect.height;
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            points.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
+            if (isDrawingNew && tempEndPoint) {
+                minX = Math.min(minX, tempEndPoint.x); maxX = Math.max(maxX, tempEndPoint.x);
+                minY = Math.min(minY, tempEndPoint.y); maxY = Math.max(maxY, tempEndPoint.y);
+            }
+            const shapeW = Math.max(maxX - minX, 1), shapeH = Math.max(maxY - minY, 1);
+            viewScale = Math.min((canvasW - padding * 2) / shapeW, (canvasH - padding * 2) / shapeH, 1);
+            viewOffsetX = canvasW / 2 - ((minX + maxX) / 2) * viewScale;
+            viewOffsetY = canvasH / 2 - ((minY + maxY) / 2) * viewScale;
         }
 
-        /**
-         * 智能吸附：扫描所有点寻找参考，支持忽略特定索引（在移动顶点或边时避免自参考）
-         */
-        function getSnappedPosition(pos, ignoreIndices = []) {
-            if (!isSnapEnabled || points.length === 0) return { ...pos, snaps: [] };
+        function logicToScreen(p) { return { x: p.x * viewScale + viewOffsetX, y: p.y * viewScale + viewOffsetY }; }
+        function screenToLogic(pos) { return { x: (pos.x - viewOffsetX) / viewScale, y: (pos.y - viewOffsetY) / viewScale }; }
+        function getMousePos(e) { const rect = canvas.getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; }
 
-            let snappedX = pos.x;
-            let snappedY = pos.y;
-            let snaps = [];
-
+        function getSnappedPosition(logicPos, ignoreIndices = []) {
+            if (!isSnapEnabled || points.length === 0) return { ...logicPos, snaps: [] };
+            let snappedX = logicPos.x, snappedY = logicPos.y, snaps = [];
+            const adjThreshold = snapThreshold / viewScale;
             points.forEach((p, i) => {
                 if (ignoreIndices.includes(i)) return;
-                
-                // X 轴对齐
-                if (Math.abs(pos.x - p.x) < snapThreshold) {
-                    snappedX = p.x;
-                    if (!snaps.find(s => s.type === 'v')) snaps.push({ type: 'v', ref: p, x: p.x });
-                }
-                // Y 轴对齐
-                if (Math.abs(pos.y - p.y) < snapThreshold) {
-                    snappedY = p.y;
-                    if (!snaps.find(s => s.type === 'h')) snaps.push({ type: 'h', ref: p, y: p.y });
-                }
+                if (Math.abs(logicPos.x - p.x) < adjThreshold) { snappedX = p.x; if (!snaps.find(s => s.type === 'v')) snaps.push({ type: 'v', ref: p, x: p.x }); }
+                if (Math.abs(logicPos.y - p.y) < adjThreshold) { snappedY = p.y; if (!snaps.find(s => s.type === 'h')) snaps.push({ type: 'h', ref: p, y: p.y }); }
             });
-
             return { x: snappedX, y: snappedY, snaps: snaps };
         }
 
         function handleStart(e) {
             if (isModalOpen) return;
-            const rawPos = getMousePos(e);
+            const screenPos = getMousePos(e);
+            const logicPos = screenToLogic(screenPos);
             
             if (isClosed) {
-                // 1. 优先检查点击顶点
-                let foundPoint = -1;
-                points.forEach((p, i) => {
-                    if (Math.hypot(p.x - rawPos.x, p.y - rawPos.y) < hitRadius) foundPoint = i;
-                });
-
-                if (foundPoint !== -1) {
-                    draggingIdx = foundPoint;
-                    lastDragPos = rawPos;
-                } else {
-                    // 2. 检查点击/长按边线进入“拖拽边”模式
-                    let side = getClickedSide(rawPos);
-                    if (side !== -1) {
-                        draggingSideIdx = side;
-                        lastDragPos = rawPos;
-                        // 准备进入拖拽，不立即弹出对话框
-                        // 通过 handleEnd 判断是单纯点击（弹窗）还是移动（拖拽）
-                    }
-                }
+                let fPt = -1;
+                points.forEach((p, i) => { const sp = logicToScreen(p); if (Math.hypot(sp.x - screenPos.x, sp.y - screenPos.y) < hitRadius) fPt = i; });
+                if (fPt !== -1) { draggingIdx = fPt; lastLogicPos = logicPos; }
+                else { let side = getClickedSide(screenPos); if (side !== -1) { draggingSideIdx = side; lastLogicPos = logicPos; } }
             } else {
-                const snapped = getSnappedPosition(rawPos);
-                if (points.length >= 3 && Math.hypot(points[0].x - snapped.x, points[0].y - snapped.y) < hitRadius) {
-                    isClosed = true;
+                if (points.length === 0) {
+                    points.push(logicPos);
                 } else {
-                    points.push({x: snapped.x, y: snapped.y});
+                    const lastPtScreen = logicToScreen(points[points.length - 1]);
+                    if (Math.hypot(lastPtScreen.x - screenPos.x, lastPtScreen.y - screenPos.y) < hitRadius) {
+                        isDrawingNew = true;
+                        tempEndPoint = logicPos;
+                    }
                 }
             }
             draw();
-            updateUI();
         }
 
         function handleMove(e) {
             if (isModalOpen) return;
-            const rawPos = getMousePos(e);
+            const screenPos = getMousePos(e);
+            const logicPos = screenToLogic(screenPos);
             
             if (draggingIdx !== -1) {
-                // 拖拽单个顶点
-                const snapped = getSnappedPosition(rawPos, [draggingIdx]);
+                const snapped = getSnappedPosition(logicPos, [draggingIdx]);
                 points[draggingIdx] = { x: snapped.x, y: snapped.y };
                 draw(snapped);
-                updateUI();
             } else if (draggingSideIdx !== -1) {
-                // 拖拽整条边
-                const dx = rawPos.x - lastDragPos.x;
-                const dy = rawPos.y - lastDragPos.y;
-                
-                const idx1 = draggingSideIdx;
-                const idx2 = (draggingSideIdx + 1) % points.length;
-
-                // 为了吸附整条边，我们取其中一个端点作为吸附基准
-                // 如果边是水平的，吸附 Y；如果是垂直的，吸附 X
-                let p1 = points[idx1];
-                let p2 = points[idx2];
-                
-                // 更新位置
-                p1.x += dx; p1.y += dy;
-                p2.x += dx; p2.y += dy;
-
-                // 辅助吸附：检查移动后的两个端点是否能吸附到其他点上
-                const snapInfo1 = getSnappedPosition(p1, [idx1, idx2]);
-                const snapInfo2 = getSnappedPosition(p2, [idx1, idx2]);
-
-                if (snapInfo1.snaps.length > 0) {
-                    p1.x = snapInfo1.x; p1.y = snapInfo1.y;
-                    // 同步 p2 保持边长和方向
-                    p2.x = p1.x + (p2.x - p1.x); // 逻辑上 p2 也被拉正
-                } else if (snapInfo2.snaps.length > 0) {
-                    p2.x = snapInfo2.x; p2.y = snapInfo2.y;
-                }
-
-                lastDragPos = rawPos;
-                draw(snapInfo1.snaps.length > 0 ? snapInfo1 : (snapInfo2.snaps.length > 0 ? snapInfo2 : null));
-                updateUI();
-            } else if (!isClosed && points.length > 0) {
-                const snapped = getSnappedPosition(rawPos);
+                const dx = logicPos.x - lastLogicPos.x, dy = logicPos.y - lastLogicPos.y;
+                const i1 = draggingSideIdx, i2 = (draggingSideIdx + 1) % points.length;
+                points[i1].x += dx; points[i1].y += dy; points[i2].x += dx; points[i2].y += dy;
+                lastLogicPos = logicPos;
+                draw();
+            } else if (isDrawingNew) {
+                const snapped = getSnappedPosition(logicPos);
+                tempEndPoint = { x: snapped.x, y: snapped.y };
                 draw(snapped);
             }
+            updateUI();
         }
 
         function handleEnd(e) {
-            // 如果点击边且位移极小，则视为“点击修改长度”
-            if (draggingSideIdx !== -1 && lastDragPos) {
-                const currentPos = (e.changedTouches && e.changedTouches.length > 0) ? 
-                                    getMousePos(e.changedTouches[0]) : getMousePos(e);
-                const travel = Math.hypot(currentPos.x - lastDragPos.x, currentPos.y - lastDragPos.y);
-                if (travel < 5) {
-                    selectedSideIdx = draggingSideIdx;
-                    showModal(points[selectedSideIdx], points[(selectedSideIdx + 1) % points.length]);
+            if (isDrawingNew && tempEndPoint) {
+                const screenPos = getMousePos(e);
+                const firstPtScreen = logicToScreen(points[0]);
+                if (points.length >= 3 && Math.hypot(firstPtScreen.x - screenPos.x, firstPtScreen.y - screenPos.y) < hitRadius) {
+                    isClosed = true;
+                } else {
+                    points.push({...tempEndPoint});
                 }
+                isDrawingNew = false;
+                tempEndPoint = null;
+            } else if (draggingSideIdx !== -1 && lastLogicPos) {
+                const travel = Math.hypot(screenToLogic(getMousePos(e)).x - lastLogicPos.x, screenToLogic(getMousePos(e)).y - lastLogicPos.y);
+                if (travel < 5) { selectedSideIdx = draggingSideIdx; showModal(points[selectedSideIdx], points[(selectedSideIdx + 1) % points.length]); }
             }
-            draggingIdx = -1;
-            draggingSideIdx = -1;
-            lastDragPos = null;
-            draw();
+            draggingIdx = -1; draggingSideIdx = -1; isDrawingNew = false; draw(); updateUI();
         }
 
-        function getClickedSide(pos) {
+        function getClickedSide(screenPos) {
             for (let i = 0; i < points.length; i++) {
-                let j = (i + 1) % points.length;
-                if (pointToSegmentDist(pos, points[i], points[j]) < 18) return i;
+                const p1 = logicToScreen(points[i]), p2 = logicToScreen(points[(i + 1) % points.length]);
+                if (pointToSegmentDist(screenPos, p1, p2) < 20) return i;
             }
             return -1;
         }
@@ -300,137 +271,94 @@
             return Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
         }
 
-        function showModal(p1, p2) {
-            lengthInput.value = Math.round(Math.hypot(p1.x - p2.x, p1.y - p2.y));
-            editModal.style.display = 'block';
-            isModalOpen = true;
-            setTimeout(() => lengthInput.focus(), 50);
-        }
-
-        function hideModal() {
-            editModal.style.display = 'none';
-            isModalOpen = false;
-            selectedSideIdx = -1;
-        }
-
+        function showModal(p1, p2) { lengthInput.value = Math.round(Math.hypot(p1.x - p2.x, p1.y - p2.y)); editModal.style.display = 'block'; isModalOpen = true; setTimeout(() => lengthInput.focus(), 50); }
+        function hideModal() { editModal.style.display = 'none'; isModalOpen = false; selectedSideIdx = -1; }
         function applyNewLength() {
             const newLen = parseFloat(lengthInput.value);
             if (isNaN(newLen) || newLen <= 0 || selectedSideIdx === -1) { hideModal(); return; }
-            const i = selectedSideIdx, j = (i + 1) % points.length;
-            const p1 = points[i], p2 = points[j];
+            const i = selectedSideIdx, j = (i + 1) % points.length, p1 = points[i], p2 = points[j];
             const dx = p2.x - p1.x, dy = p2.y - p1.y, oldLen = Math.hypot(dx, dy);
             if (oldLen > 0.1) {
                 const ratio = newLen / oldLen;
-                if (j !== 0) {
-                    const sx = (p1.x + dx * ratio) - p2.x, sy = (p1.y + dy * ratio) - p2.y;
-                    for (let k = j; k < points.length; k++) { points[k].x += sx; points[k].y += sy; }
-                } else {
-                    const idx = p1.x - p2.x, idy = p1.y - p2.y;
-                    points[i].x = p2.x + idx * ratio; points[i].y = p2.y + idy * ratio;
-                }
+                if (j !== 0) { const sx = (p1.x + dx * ratio) - p2.x, sy = (p1.y + dy * ratio) - p2.y; for (let k = j; k < points.length; k++) { points[k].x += sx; points[k].y += sy; } }
+                else { const idx = p1.x - p2.x, idy = p1.y - p2.y; points[i].x = p2.x + idx * ratio; points[i].y = p2.y + idy * ratio; }
             }
             hideModal(); draw(); updateUI();
         }
 
         function updateUI() {
-            areaText.textContent = Math.round(calculateArea()).toLocaleString();
-            if (isClosed) {
-                statusText.textContent = "已闭合。拖动端点、拖动连线、或点击连线修改长度。";
-                btnClose.disabled = true;
-            } else {
-                statusText.textContent = points.length === 0 ? "点击开始绘制..." : "双向吸附已开启，移动光标寻找对齐线。";
-                btnClose.disabled = points.length < 3;
-            }
-        }
-
-        function calculateArea() {
-            if (points.length < 3 || !isClosed) return 0;
             let area = 0;
-            for (let i = 0; i < points.length; i++) {
-                let j = (i + 1) % points.length;
-                area += points[i].x * points[j].y - points[j].x * points[i].y;
+            if (points.length >= 3 && isClosed) {
+                for (let i = 0; i < points.length; i++) { let j = (i + 1) % points.length; area += points[i].x * points[j].y - points[j].x * points[i].y; }
+                area = Math.abs(area) / 2;
             }
-            return Math.abs(area) / 2;
+            areaText.textContent = Math.round(area).toLocaleString();
+            if (isClosed) statusText.textContent = "已闭合。拖动顶点或边，点击边可修改数值。";
+            else if (points.length === 0) statusText.textContent = "点击画布放置起点。";
+            else statusText.textContent = "按住最后一点并拖动来拉出新连线。";
+            btnClose.disabled = points.length < 3;
         }
 
         function draw(snappedInfo = null) {
             const rect = canvas.getBoundingClientRect();
             ctx.clearRect(0, 0, rect.width, rect.height);
+            updateViewport();
             if (points.length === 0) return;
 
-            // 1. 绘制十字对齐辅助线
+            // 1. 十字对齐线
             if (snappedInfo && snappedInfo.snaps && snappedInfo.snaps.length > 0) {
-                ctx.save();
-                ctx.setLineDash([3, 3]);
-                ctx.lineWidth = 1;
+                ctx.save(); ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
                 snappedInfo.snaps.forEach(snap => {
-                    ctx.beginPath();
-                    ctx.strokeStyle = '#f59e0b';
-                    if (snap.type === 'h') {
-                        ctx.moveTo(0, snap.y); ctx.lineTo(rect.width, snap.y);
-                    } else {
-                        ctx.moveTo(snap.x, 0); ctx.lineTo(snap.x, rect.height);
-                    }
-                    ctx.stroke();
-                    ctx.beginPath(); ctx.arc(snap.ref.x, snap.ref.y, 4, 0, Math.PI*2); ctx.stroke();
+                    const sp = logicToScreen(snap.ref); ctx.beginPath(); ctx.strokeStyle = '#f59e0b';
+                    if (snap.type === 'h') { ctx.moveTo(0, sp.y); ctx.lineTo(rect.width, sp.y); }
+                    else { ctx.moveTo(sp.x, 0); ctx.lineTo(sp.x, rect.height); }
+                    ctx.stroke(); ctx.beginPath(); ctx.arc(sp.x, sp.y, 4, 0, Math.PI*2); ctx.stroke();
                 });
                 ctx.restore();
             }
 
-            // 2. 填充
-            if (isClosed) {
-                ctx.beginPath();
-                ctx.moveTo(points[0].x, points[0].y);
-                points.forEach(p => ctx.lineTo(p.x, p.y));
-                ctx.closePath();
-                ctx.fillStyle = 'rgba(16, 185, 129, 0.05)';
-                ctx.fill();
-            }
-
-            // 3. 绘制多边形边线
+            // 2. 填充与轮廓
             ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            for (let i = 0; i < points.length; i++) {
-                let j = (i + 1) % points.length;
-                if (!isClosed && i === points.length - 1) {
-                    if (snappedInfo) ctx.lineTo(snappedInfo.x, snappedInfo.y);
-                } else {
-                    ctx.lineTo(points[j].x, points[j].y);
-                    drawLengthLabel(points[i], points[j]);
-                }
-            }
+            const p0 = logicToScreen(points[0]);
+            ctx.moveTo(p0.x, p0.y);
+            points.forEach(p => { const sp = logicToScreen(p); ctx.lineTo(sp.x, sp.y); });
+            if (isDrawingNew && tempEndPoint) { const sp = logicToScreen(tempEndPoint); ctx.lineTo(sp.x, sp.y); }
+            if (isClosed) ctx.closePath();
+
+            if (isClosed) { ctx.fillStyle = 'rgba(16, 185, 129, 0.05)'; ctx.fill(); }
             
-            const isAnySnapped = snappedInfo && snappedInfo.snaps && snappedInfo.snaps.length > 0;
-            ctx.strokeStyle = (isAnySnapped && !isClosed) ? '#f59e0b' : (isClosed ? '#10b981' : '#3b82f6');
+            ctx.strokeStyle = isClosed ? '#10b981' : (isDrawingNew ? '#f59e0b' : '#3b82f6');
             ctx.lineWidth = 3;
             if (!isClosed) ctx.setLineDash([5, 5]);
             ctx.stroke();
             ctx.setLineDash([]);
 
+            // 3. 长度标注
+            for (let i = 0; i < points.length; i++) {
+                let j = (i + 1) % points.length;
+                if (isClosed || i < points.length - 1) drawLengthLabel(points[i], points[j]);
+            }
+            if (isDrawingNew && tempEndPoint) drawLengthLabel(points[points.length-1], tempEndPoint);
+
             // 4. 顶点
             points.forEach((p, i) => {
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, isClosed ? 6 : 4, 0, Math.PI * 2);
-                ctx.fillStyle = isClosed ? '#3b82f6' : (i === 0 && points.length >= 3 ? '#ef4444' : '#3b82f6');
+                const sp = logicToScreen(p);
+                ctx.beginPath(); ctx.arc(sp.x, sp.y, isClosed ? 6 : (i === points.length-1 ? 10 : 4), 0, Math.PI * 2);
+                ctx.fillStyle = isClosed ? '#3b82f6' : (i === 0 && points.length >= 3 ? '#ef4444' : (i === points.length-1 ? 'rgba(59, 130, 246, 0.2)' : '#3b82f6'));
                 ctx.fill();
-                ctx.strokeStyle = 'white';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+                if (i === points.length - 1 && !isClosed) { ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2; ctx.stroke(); ctx.beginPath(); ctx.arc(sp.x, sp.y, 4, 0, Math.PI*2); ctx.fillStyle='#3b82f6'; ctx.fill(); }
+                ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
             });
         }
 
-        function drawLengthLabel(p1, p2) {
+        function drawLengthLabel(lp1, lp2) {
+            const p1 = logicToScreen(lp1), p2 = logicToScreen(lp2);
             const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
-            const len = Math.round(Math.hypot(p1.x - p2.x, p1.y - p2.y));
-            ctx.save();
-            ctx.font = '10px font-mono';
-            ctx.textAlign = 'center';
-            const tw = ctx.measureText(len).width;
-            ctx.fillStyle = 'rgba(255,255,255,0.8)';
-            ctx.fillRect(midX - tw/2 - 2, midY - 6, tw + 4, 12);
-            ctx.fillStyle = '#64748b';
-            ctx.fillText(len, midX, midY + 4);
-            ctx.restore();
+            const logicLen = Math.round(Math.hypot(lp1.x - lp2.x, lp1.y - lp2.y));
+            ctx.save(); ctx.font = '10px font-mono'; ctx.textAlign = 'center';
+            const txt = logicLen.toString(); const tw = ctx.measureText(txt).width;
+            ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.fillRect(midX - tw/2 - 2, midY - 6, tw + 4, 12);
+            ctx.fillStyle = '#64748b'; ctx.fillText(txt, midX, midY + 4); ctx.restore();
         }
 
         init();
