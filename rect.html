@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>手动绘制多边形 - 十字全对齐版</title>
+    <title>手动绘制多边形 - 边拖动与全吸附版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #f8fafc; overflow: hidden; }
@@ -35,7 +35,7 @@
     <div class="bg-white border-b border-slate-200 px-4 py-3 shadow-sm">
         <div class="max-w-6xl mx-auto flex items-center justify-between">
             <div>
-                <h1 class="text-lg md:text-xl font-black text-slate-800 tracking-tight">自定义形状绘制 (十字全对齐)</h1>
+                <h1 class="text-lg md:text-xl font-black text-slate-800 tracking-tight">自定义形状绘制 (支持边拖拽)</h1>
                 <p id="status-text" class="text-xs text-blue-600 font-medium italic">点击画布开始绘制...</p>
             </div>
             <div class="text-right">
@@ -100,12 +100,14 @@
 
         let points = [];
         let isClosed = false;
-        let draggingIdx = -1;
+        let draggingIdx = -1;       // 正在拖拽的顶点索引
+        let draggingSideIdx = -1;   // 正在拖拽的边索引
+        let lastDragPos = null;     // 上一次拖拽的位置，用于计算偏移量
         let selectedSideIdx = -1;
         let isSnapEnabled = true;
         let isModalOpen = false;
-        const hitRadius = 20;
-        const snapThreshold = 18; // 略微调小，防止误吸附
+        const hitRadius = 25;       // 增大判定范围，方便触控
+        const snapThreshold = 18;
 
         function init() {
             window.addEventListener('resize', resizeCanvas);
@@ -155,41 +157,27 @@
         }
 
         /**
-         * 智能吸附逻辑：扫描所有顶点，寻找最合适的 X 和 Y 对齐参考
+         * 智能吸附：扫描所有点寻找参考，支持忽略特定索引（在移动顶点或边时避免自参考）
          */
-        function getSnappedPosition(pos, targetIdx = -1) {
+        function getSnappedPosition(pos, ignoreIndices = []) {
             if (!isSnapEnabled || points.length === 0) return { ...pos, snaps: [] };
 
             let snappedX = pos.x;
             let snappedY = pos.y;
-            let snaps = []; // 存储所有生效的对齐参考
+            let snaps = [];
 
-            // 1. 寻找 X 坐标对齐 (垂直辅助线)
-            let minDistX = snapThreshold;
             points.forEach((p, i) => {
-                if (i === targetIdx) return;
-                const d = Math.abs(pos.x - p.x);
-                if (d < minDistX) {
-                    minDistX = d;
+                if (ignoreIndices.includes(i)) return;
+                
+                // X 轴对齐
+                if (Math.abs(pos.x - p.x) < snapThreshold) {
                     snappedX = p.x;
-                    // 记录参考点
-                    const existing = snaps.find(s => s.type === 'v');
-                    if (existing) existing.ref = p;
-                    else snaps.push({ type: 'v', ref: p, x: p.x });
+                    if (!snaps.find(s => s.type === 'v')) snaps.push({ type: 'v', ref: p, x: p.x });
                 }
-            });
-
-            // 2. 寻找 Y 坐标对齐 (水平辅助线)
-            let minDistY = snapThreshold;
-            points.forEach((p, i) => {
-                if (i === targetIdx) return;
-                const d = Math.abs(pos.y - p.y);
-                if (d < minDistY) {
-                    minDistY = d;
+                // Y 轴对齐
+                if (Math.abs(pos.y - p.y) < snapThreshold) {
                     snappedY = p.y;
-                    const existing = snaps.find(s => s.type === 'h');
-                    if (existing) existing.ref = p;
-                    else snaps.push({ type: 'h', ref: p, y: p.y });
+                    if (!snaps.find(s => s.type === 'h')) snaps.push({ type: 'h', ref: p, y: p.y });
                 }
             });
 
@@ -201,14 +189,24 @@
             const rawPos = getMousePos(e);
             
             if (isClosed) {
+                // 1. 优先检查点击顶点
                 let foundPoint = -1;
                 points.forEach((p, i) => {
                     if (Math.hypot(p.x - rawPos.x, p.y - rawPos.y) < hitRadius) foundPoint = i;
                 });
+
                 if (foundPoint !== -1) {
                     draggingIdx = foundPoint;
+                    lastDragPos = rawPos;
                 } else {
-                    checkSideClick(rawPos);
+                    // 2. 检查点击/长按边线进入“拖拽边”模式
+                    let side = getClickedSide(rawPos);
+                    if (side !== -1) {
+                        draggingSideIdx = side;
+                        lastDragPos = rawPos;
+                        // 准备进入拖拽，不立即弹出对话框
+                        // 通过 handleEnd 判断是单纯点击（弹窗）还是移动（拖拽）
+                    }
                 }
             } else {
                 const snapped = getSnappedPosition(rawPos);
@@ -227,9 +225,42 @@
             const rawPos = getMousePos(e);
             
             if (draggingIdx !== -1) {
-                const snapped = getSnappedPosition(rawPos, draggingIdx);
+                // 拖拽单个顶点
+                const snapped = getSnappedPosition(rawPos, [draggingIdx]);
                 points[draggingIdx] = { x: snapped.x, y: snapped.y };
                 draw(snapped);
+                updateUI();
+            } else if (draggingSideIdx !== -1) {
+                // 拖拽整条边
+                const dx = rawPos.x - lastDragPos.x;
+                const dy = rawPos.y - lastDragPos.y;
+                
+                const idx1 = draggingSideIdx;
+                const idx2 = (draggingSideIdx + 1) % points.length;
+
+                // 为了吸附整条边，我们取其中一个端点作为吸附基准
+                // 如果边是水平的，吸附 Y；如果是垂直的，吸附 X
+                let p1 = points[idx1];
+                let p2 = points[idx2];
+                
+                // 更新位置
+                p1.x += dx; p1.y += dy;
+                p2.x += dx; p2.y += dy;
+
+                // 辅助吸附：检查移动后的两个端点是否能吸附到其他点上
+                const snapInfo1 = getSnappedPosition(p1, [idx1, idx2]);
+                const snapInfo2 = getSnappedPosition(p2, [idx1, idx2]);
+
+                if (snapInfo1.snaps.length > 0) {
+                    p1.x = snapInfo1.x; p1.y = snapInfo1.y;
+                    // 同步 p2 保持边长和方向
+                    p2.x = p1.x + (p2.x - p1.x); // 逻辑上 p2 也被拉正
+                } else if (snapInfo2.snaps.length > 0) {
+                    p2.x = snapInfo2.x; p2.y = snapInfo2.y;
+                }
+
+                lastDragPos = rawPos;
+                draw(snapInfo1.snaps.length > 0 ? snapInfo1 : (snapInfo2.snaps.length > 0 ? snapInfo2 : null));
                 updateUI();
             } else if (!isClosed && points.length > 0) {
                 const snapped = getSnappedPosition(rawPos);
@@ -237,21 +268,29 @@
             }
         }
 
-        function handleEnd() {
+        function handleEnd(e) {
+            // 如果点击边且位移极小，则视为“点击修改长度”
+            if (draggingSideIdx !== -1 && lastDragPos) {
+                const currentPos = (e.changedTouches && e.changedTouches.length > 0) ? 
+                                    getMousePos(e.changedTouches[0]) : getMousePos(e);
+                const travel = Math.hypot(currentPos.x - lastDragPos.x, currentPos.y - lastDragPos.y);
+                if (travel < 5) {
+                    selectedSideIdx = draggingSideIdx;
+                    showModal(points[selectedSideIdx], points[(selectedSideIdx + 1) % points.length]);
+                }
+            }
             draggingIdx = -1;
+            draggingSideIdx = -1;
+            lastDragPos = null;
             draw();
         }
 
-        function checkSideClick(pos) {
+        function getClickedSide(pos) {
             for (let i = 0; i < points.length; i++) {
                 let j = (i + 1) % points.length;
-                let dist = pointToSegmentDist(pos, points[i], points[j]);
-                if (dist < 15) {
-                    selectedSideIdx = i;
-                    showModal(points[i], points[j]);
-                    return;
-                }
+                if (pointToSegmentDist(pos, points[i], points[j]) < 18) return i;
             }
+            return -1;
         }
 
         function pointToSegmentDist(p, a, b) {
@@ -276,25 +315,18 @@
 
         function applyNewLength() {
             const newLen = parseFloat(lengthInput.value);
-            if (isNaN(newLen) || newLen <= 0 || selectedSideIdx === -1) {
-                hideModal();
-                return;
-            }
-
+            if (isNaN(newLen) || newLen <= 0 || selectedSideIdx === -1) { hideModal(); return; }
             const i = selectedSideIdx, j = (i + 1) % points.length;
             const p1 = points[i], p2 = points[j];
             const dx = p2.x - p1.x, dy = p2.y - p1.y, oldLen = Math.hypot(dx, dy);
-
             if (oldLen > 0.1) {
                 const ratio = newLen / oldLen;
                 if (j !== 0) {
-                    const shiftX = (p1.x + dx * ratio) - p2.x, shiftY = (p1.y + dy * ratio) - p2.y;
-                    for (let k = j; k < points.length; k++) {
-                        points[k].x += shiftX; points[k].y += shiftY;
-                    }
+                    const sx = (p1.x + dx * ratio) - p2.x, sy = (p1.y + dy * ratio) - p2.y;
+                    for (let k = j; k < points.length; k++) { points[k].x += sx; points[k].y += sy; }
                 } else {
-                    const invDx = p1.x - p2.x, invDy = p1.y - p2.y;
-                    points[i].x = p2.x + invDx * ratio; points[i].y = p2.y + invDy * ratio;
+                    const idx = p1.x - p2.x, idy = p1.y - p2.y;
+                    points[i].x = p2.x + idx * ratio; points[i].y = p2.y + idy * ratio;
                 }
             }
             hideModal(); draw(); updateUI();
@@ -303,7 +335,7 @@
         function updateUI() {
             areaText.textContent = Math.round(calculateArea()).toLocaleString();
             if (isClosed) {
-                statusText.textContent = "已闭合。拖动端点或点击边线修改长度。";
+                statusText.textContent = "已闭合。拖动端点、拖动连线、或点击连线修改长度。";
                 btnClose.disabled = true;
             } else {
                 statusText.textContent = points.length === 0 ? "点击开始绘制..." : "双向吸附已开启，移动光标寻找对齐线。";
@@ -326,7 +358,7 @@
             ctx.clearRect(0, 0, rect.width, rect.height);
             if (points.length === 0) return;
 
-            // 1. 绘制所有生效的对齐辅助线 (十字星)
+            // 1. 绘制十字对齐辅助线
             if (snappedInfo && snappedInfo.snaps && snappedInfo.snaps.length > 0) {
                 ctx.save();
                 ctx.setLineDash([3, 3]);
@@ -340,11 +372,7 @@
                         ctx.moveTo(snap.x, 0); ctx.lineTo(snap.x, rect.height);
                     }
                     ctx.stroke();
-                    
-                    // 在参考点画一个小圈
-                    ctx.beginPath();
-                    ctx.arc(snap.ref.x, snap.ref.y, 4, 0, Math.PI*2);
-                    ctx.stroke();
+                    ctx.beginPath(); ctx.arc(snap.ref.x, snap.ref.y, 4, 0, Math.PI*2); ctx.stroke();
                 });
                 ctx.restore();
             }
@@ -359,7 +387,7 @@
                 ctx.fill();
             }
 
-            // 3. 边线
+            // 3. 绘制多边形边线
             ctx.beginPath();
             ctx.moveTo(points[0].x, points[0].y);
             for (let i = 0; i < points.length; i++) {
@@ -372,7 +400,6 @@
                 }
             }
             
-            // 如果处于吸附状态且不是闭合态，使用提示色
             const isAnySnapped = snappedInfo && snappedInfo.snaps && snappedInfo.snaps.length > 0;
             ctx.strokeStyle = (isAnySnapped && !isClosed) ? '#f59e0b' : (isClosed ? '#10b981' : '#3b82f6');
             ctx.lineWidth = 3;
