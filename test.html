@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>可编辑梯形 - 自动缩放版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #f8fafc;
+        }
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            height: 320px; 
+            background: white;
+            border-radius: 12px;
+            box-shadow: inset 0 2px 4px 0 rgb(0 0 0 / 0.05);
+            overflow: hidden;
+            touch-action: none;
+        }
+        @media (min-width: 768px) {
+            #canvas-container { height: 500px; }
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .input-card {
+            @apply bg-white p-3 rounded-xl border border-slate-200 shadow-sm transition-all focus-within:ring-2 focus-within:ring-indigo-500/20;
+        }
+    </style>
+</head>
+<body class="antialiased text-slate-900">
+    <div class="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-3">
+        <div class="max-w-6xl mx-auto flex items-center justify-between">
+            <div>
+                <h1 class="text-xl md:text-2xl font-black text-slate-800 tracking-tight">智能缩放梯形</h1>
+                <p class="hidden md:block text-slate-500 text-xs mt-1">图形会自动缩放以适配屏幕，无论尺寸多大</p>
+            </div>
+            <div class="text-right">
+                <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">面积 (逻辑单位)</div>
+                <div class="text-xl font-mono font-black text-indigo-600">
+                    <span id="area-val">0</span> <small class="text-xs font-medium">u²</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <main class="max-w-6xl mx-auto p-4 space-y-6">
+        <div class="flex flex-col lg:grid lg:grid-cols-12 gap-6">
+            
+            <!-- 画布区域 -->
+            <div class="lg:col-span-8 order-1">
+                <div id="canvas-container" class="border border-slate-200">
+                    <canvas id="trapezoidCanvas"></canvas>
+                    <div id="drag-hint-label" class="absolute pointer-events-none bg-indigo-600 text-white text-[10px] px-2 py-1 rounded-full shadow-lg font-bold uppercase transition-opacity duration-300 opacity-0">
+                        拖动平移
+                    </div>
+                </div>
+            </div>
+
+            <!-- 控制面板 -->
+            <div class="lg:col-span-4 order-2 space-y-4">
+                <div class="grid grid-cols-2 lg:grid-cols-1 gap-3">
+                    <div class="input-card">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">上底 (a)</label>
+                        <input type="number" id="input-top" inputmode="decimal" class="w-full text-lg font-mono font-bold outline-none bg-transparent" value="200">
+                    </div>
+                    <div class="input-card">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">下底 (b)</label>
+                        <input type="number" id="input-bottom" inputmode="decimal" class="w-full text-lg font-mono font-bold outline-none bg-transparent" value="360">
+                    </div>
+                    <div class="input-card">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">高度 (h)</label>
+                        <input type="number" id="input-height" inputmode="decimal" class="w-full text-lg font-mono font-bold outline-none bg-transparent" value="180">
+                    </div>
+                    <div class="input-card">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">平移量 (offset)</label>
+                        <div class="flex items-center gap-2">
+                            <input type="number" id="input-offset" inputmode="decimal" class="w-full text-lg font-mono font-bold outline-none bg-transparent" value="80">
+                            <button id="reset-offset" class="shrink-0 p-2 bg-indigo-50 text-indigo-600 rounded-lg transition-colors hover:bg-indigo-100">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-indigo-50 p-4 rounded-xl flex items-start gap-3">
+                    <svg class="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path></svg>
+                    <p class="text-[11px] text-indigo-800 leading-relaxed">
+                        <b>自动适配：</b>无论你输入多大的数值，图形都会自动缩小以适应屏幕显示。尝试输入 800 或 1000 试试看。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const container = document.getElementById('canvas-container');
+        const canvas = document.getElementById('trapezoidCanvas');
+        const ctx = canvas.getContext('2d');
+        const hintLabel = document.getElementById('drag-hint-label');
+
+        const inputs = {
+            top: document.getElementById('input-top'),
+            bottom: document.getElementById('input-bottom'),
+            height: document.getElementById('input-height'),
+            offset: document.getElementById('input-offset')
+        };
+        const resetBtn = document.getElementById('reset-offset');
+        const uiArea = document.getElementById('area-val');
+
+        let state = { topBase: 200, bottomBase: 360, height: 180, offset: 80 };
+        let isDragging = false;
+        let startMouseX = 0;
+        let startOffsetX = 0;
+        let isHoveringTop = false;
+        let currentDrawScale = 1; // 记录当前的缩放比例
+
+        function init() {
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            Object.values(inputs).forEach(el => el.addEventListener('input', updateFromInputs));
+            resetBtn.addEventListener('click', () => {
+                state.offset = (state.bottomBase - state.topBase) / 2;
+                updateInputsFromState();
+                draw();
+            });
+
+            canvas.addEventListener('mousedown', e => handleStart(e));
+            window.addEventListener('mousemove', e => handleMove(e));
+            window.addEventListener('mouseup', handleEnd);
+
+            canvas.addEventListener('touchstart', e => handleStart(e.touches[0]), { passive: false });
+            window.addEventListener('touchmove', e => handleMove(e.touches[0]), { passive: false });
+            window.addEventListener('touchend', handleEnd);
+
+            draw();
+        }
+
+        function resizeCanvas() {
+            const rect = container.getBoundingClientRect();
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+            draw();
+        }
+
+        function updateFromInputs() {
+            state.topBase = parseFloat(inputs.top.value) || 0;
+            state.bottomBase = parseFloat(inputs.bottom.value) || 0;
+            state.height = parseFloat(inputs.height.value) || 0;
+            state.offset = parseFloat(inputs.offset.value) || 0;
+            draw();
+        }
+
+        function updateInputsFromState() {
+            inputs.offset.value = Math.round(state.offset);
+        }
+
+        // 计算带缩放的坐标点
+        function getTransformedPoints() {
+            const rect = container.getBoundingClientRect();
+            const canvasW = rect.width;
+            const canvasH = rect.height;
+            const padding = 60; // 边距
+
+            // 1. 计算原始逻辑点 (以 0,0 为中心)
+            const bL = -state.bottomBase / 2;
+            const bR = state.bottomBase / 2;
+            const bY = state.height / 2;
+            const tL = bL + state.offset;
+            const tR = tL + state.topBase;
+            const tY = -state.height / 2;
+
+            const rawPoints = {
+                bl: { x: bL, y: bY }, br: { x: bR, y: bY },
+                tl: { x: tL, y: tY }, tr: { x: tR, y: tY }
+            };
+
+            // 2. 计算包围盒尺寸
+            const minX = Math.min(bL, bR, tL, tR);
+            const maxX = Math.max(bL, bR, tL, tR);
+            const minY = tY;
+            const maxY = bY;
+            
+            const shapeW = maxX - minX;
+            const shapeH = maxY - minY;
+
+            // 3. 计算缩放比例以适应画布
+            const scaleX = (canvasW - padding * 2) / Math.max(shapeW, 1);
+            const scaleY = (canvasH - padding * 2) / Math.max(shapeH, 1);
+            // 我们取两者的最小值，且最高不放大超过 1.0 (可选，如果你希望小图形也占满可以去掉 Math.min 里的 1)
+            const scale = Math.min(scaleX, scaleY, 1.2); 
+            currentDrawScale = scale;
+
+            // 4. 将逻辑点转换为画布视图点
+            const centerX = canvasW / 2;
+            const centerY = canvasH / 2;
+            
+            // 计算图形中心点的偏移（纠正因为 offset 导致的不对称）
+            const shapeCenterX = (minX + maxX) / 2;
+            const shapeCenterY = (minY + maxY) / 2;
+
+            const transform = (p) => ({
+                x: centerX + (p.x - shapeCenterX) * scale,
+                y: centerY + (p.y - shapeCenterY) * scale
+            });
+
+            return {
+                bl: transform(rawPoints.bl),
+                br: transform(rawPoints.br),
+                tl: transform(rawPoints.tl),
+                tr: transform(rawPoints.tr),
+                scale: scale
+            };
+        }
+
+        function handleStart(e) {
+            if (isMouseOverTopEdge(e)) {
+                isDragging = true;
+                startMouseX = e.clientX;
+                startOffsetX = state.offset;
+                canvas.style.cursor = 'grabbing';
+            }
+        }
+
+        function handleMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+
+            if (isDragging) {
+                // 关键点：鼠标移动量需要除以当前缩放比例，转换回逻辑单位
+                const deltaMouseX = e.clientX - startMouseX;
+                state.offset = startOffsetX + (deltaMouseX / currentDrawScale);
+                updateInputsFromState();
+                draw();
+                hintLabel.style.opacity = '0';
+            } else {
+                const over = isMouseOverTopEdge(e);
+                if (over !== isHoveringTop) {
+                    isHoveringTop = over;
+                    draw();
+                }
+                canvas.style.cursor = over ? 'grab' : 'default';
+                
+                if (over) {
+                    hintLabel.style.opacity = '1';
+                    hintLabel.style.left = `${mx}px`;
+                    hintLabel.style.top = `${my - 45}px`;
+                } else {
+                    hintLabel.style.opacity = '0';
+                }
+            }
+        }
+
+        function handleEnd() {
+            isDragging = false;
+            draw();
+        }
+
+        function isMouseOverTopEdge(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+            const p = getTransformedPoints();
+            const threshold = 30; 
+            
+            const minX = Math.min(p.tl.x, p.tr.x);
+            const maxX = Math.max(p.tl.x, p.tr.x);
+            
+            return Math.abs(my - p.tl.y) < threshold && mx > minX - 20 && mx < maxX + 20;
+        }
+
+        function draw() {
+            const rect = container.getBoundingClientRect();
+            ctx.clearRect(0, 0, rect.width, rect.height);
+            
+            const p = getTransformedPoints();
+            const area = ((state.topBase + state.bottomBase) * state.height) / 2;
+            uiArea.textContent = Math.abs(area).toLocaleString(undefined, {maximumFractionDigits: 1});
+
+            // 1. 背景网格
+            ctx.strokeStyle = '#f8fafc';
+            ctx.lineWidth = 1;
+            for(let i=0; i<rect.width; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,rect.height); ctx.stroke(); }
+            for(let i=0; i<rect.height; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(rect.width,i); ctx.stroke(); }
+
+            // 2. 梯形主体
+            ctx.beginPath();
+            ctx.moveTo(p.bl.x, p.bl.y); ctx.lineTo(p.br.x, p.br.y);
+            ctx.lineTo(p.tr.x, p.tr.y); ctx.lineTo(p.tl.x, p.tl.y);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.04)';
+            ctx.fill();
+            ctx.strokeStyle = '#e2e8f0';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            const isActive = isDragging || isHoveringTop;
+
+            // 3. 上底高亮
+            ctx.beginPath();
+            ctx.moveTo(p.tl.x, p.tl.y); ctx.lineTo(p.tr.x, p.tr.y);
+            ctx.lineWidth = isActive ? 14 : 10;
+            ctx.strokeStyle = isActive ? 'rgba(99, 102, 241, 0.4)' : 'rgba(99, 102, 241, 0.15)';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(p.tl.x, p.tl.y); ctx.lineTo(p.tr.x, p.tr.y);
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#6366f1';
+            ctx.stroke();
+
+            const drawHandle = (pt) => {
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, isActive ? 7 : 5, 0, Math.PI*2);
+                ctx.fillStyle = '#6366f1';
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            };
+            drawHandle(p.tl);
+            drawHandle(p.tr);
+
+            // 4. 高度辅助
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = '#cbd5e1';
+            ctx.beginPath(); ctx.moveTo(p.tl.x, p.tl.y); ctx.lineTo(p.tl.x, p.bl.y); ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText(`h:${Math.round(state.height)}`, p.tl.x - 8, (p.tl.y + p.bl.y)/2);
+
+            // 5. 尺寸标注
+            ctx.fillStyle = '#64748b';
+            ctx.textAlign = 'center';
+            ctx.font = 'bold 11px font-mono';
+            ctx.fillText(`a:${Math.round(state.topBase)}`, (p.tl.x + p.tr.x)/2, p.tl.y - 20);
+            ctx.fillText(`b:${Math.round(state.bottomBase)}`, (p.bl.x + p.br.x)/2, p.bl.y + 25);
+            
+            // 6. 手柄装饰
+            if (isActive) {
+                const midX = (p.tl.x + p.tr.x)/2;
+                ctx.fillStyle = 'white';
+                for(let i=-1; i<=1; i++) ctx.fillRect(midX + i*5 - 1, p.tl.y - 4, 2, 8);
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
